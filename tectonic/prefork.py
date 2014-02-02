@@ -8,12 +8,15 @@ import pysigset
 import gevent
 
 # ugh
+IGNORE_SIGS = ('SIGKILL', 'SIGSTOP', 'SIG_DFL', 'SIG_IGN')
 SIGNO_TO_NAME = {no: name for name, no in signal.__dict__.iteritems()
-                 if name.startswith('SIG') and '_' not in name}
+                 if name.startswith('SIG')
+                 and name not in IGNORE_SIGS}
+DEFAULT_SIGNAL_HANDLERS = {signo: signal.getsignal(signo)
+                           for signo in SIGNO_TO_NAME}
 
 
 class Master(object):
-    UNCATCHABLE = ('SIGKILL', 'SIGSTOP')
     BACKLOG = 128
 
     def __init__(self, server_class, socket_factory, wsgi, address, logpath,
@@ -62,17 +65,17 @@ class Master(object):
         with open(self.pidfile, 'w') as f:
             f.write(str(os.getpid()))
 
-    def spawn_worker(self, default_signal_handlers):
+    def spawn_worker(self):
         pid = os.fork()
         if pid:
             return pid
-        self.set_signal_handlers(default_signal_handlers)
+        self.set_signal_handlers(DEFAULT_SIGNAL_HANDLERS)
         self.server.serve_forever()
         sys.exit(0)
 
-    def spawn_workers(self, number, default_signal_handlers):
+    def spawn_workers(self, number):
         for _ in xrange(number):
-            self.children.add(self.spawn_worker(default_signal_handlers))
+            self.children.add(self.spawn_worker())
 
     def set_signal_handlers(self, signal_handlers):
         return {signo: signal.signal(signo, handler)
@@ -88,24 +91,22 @@ class Master(object):
 
         return self.set_signal_handlers({signo: handler
                                          for signo, name
-                                         in SIGNO_TO_NAME.iteritems()
-                                         if name not in self.UNCATCHABLE})
+                                         in SIGNO_TO_NAME.iteritems()})
 
     def run(self, daemonize=True):
         self.bind()
         if daemonize:
             self.log()
             self.daemonize()
-        original_handlers = self.master_signals()
+
+        self.master_signals()
         self.server = self.server_class(self.listener, self.wsgi)
-        self.spawn_workers(self.num_workers,
-                           default_signal_handlers=original_handlers)
+        self.spawn_workers(self.num_workers)
 
         while True:
             pysigset.sigsuspend(pysigset.SIGSET())
             if self.num_workers > len(self.children):
-                self.spawn_workers(self.num_workers - len(self.children),
-                                   default_signal_handlers=original_handlers)
+                self.spawn_workers(self.num_workers - len(self.children))
 
     def SIGCLD_handler(self, signo, frame):
         while True:
@@ -117,6 +118,8 @@ class Master(object):
             except OSError as e:
                 if e.errno == errno.ECHILD:
                     break
+
+    SIGCHLD_handler = SIGCLD_handler
 
     def SIGTERM_handler(self, signo, frame):
         for child in self.children:
