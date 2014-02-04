@@ -96,6 +96,7 @@ class Master(object):
         self.pipe_to_workers[w.health_check_read] = w
 
     def remove_worker(self, w):
+        # we may have gotten interrupted by a signal
         if w:
             self.pid_to_workers.pop(w.pid, None)
             self.pipe_to_workers.pop(w.health_check_read, None)
@@ -136,10 +137,10 @@ class Master(object):
 
     def health_check(self, fd_limit, maxrss_limit):
         # parent alive?
-        # if os.getppid() == 1:
-        #     # we were orphaned and adopted by init
-        #     sys.stderr.write('parent died!\n')
-        #     sys.exit(1)
+        if os.getppid() == 1:
+            # we were orphaned and adopted by init
+            sys.stderr.write('parent died!\n')
+            sys.exit(1)
         # memory usage?
         usage = resource.getrusage(resource.RUSAGE_SELF)
 
@@ -255,7 +256,6 @@ class Master(object):
                 pid, status = os.waitpid(-1, os.WNOHANG)
                 if not pid:
                     break
-                # we may have gotten interrupted by another sigchld call!
                 self.remove_worker(self.pid_to_workers.get(pid))
             except OSError as e:
                 if e.errno == errno.ECHILD:
