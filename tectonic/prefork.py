@@ -1,10 +1,13 @@
 import errno
+import fcntl
 import os
 import multiprocessing
 import socket
 import signal
+import select
 import sys
-import pysigset
+import resource
+import time
 import gevent
 
 # ugh
@@ -16,13 +19,45 @@ DEFAULT_SIGNAL_HANDLERS = {signo: signal.getsignal(signo)
                            for signo in SIGNO_TO_NAME}
 
 
+def set_nonblocking(*fds):
+    for fd in fds:
+        fcntl.fcntl(fd, fcntl.F_SETFL, os.O_NONBLOCK)
+    return fds
+
+
+class WriteAndFlushFile(file):
+
+    def write(self, str):
+        full = len(str) == os.write(self.fileno(), str)
+        self.flush()
+        return full
+
+    def writelines(self, sequence_of_strings):
+        return self.write(''.join(sequence_of_strings))
+
+
+class WorkerMetadata(object):
+
+    def __init__(self, pid, health_check_read, last_seen):
+        self.pid = pid
+        self.health_check_read = health_check_read
+        self.last_seen = last_seen
+
+
 class Master(object):
     BACKLOG = 128
+    DEFAULT_NUM_WORKERS = multiprocessing.cpu_count() - 1
+    CHILD_HEALTH_INTERVAL = 1.0
+    SELECT_TIMEOUT = CHILD_HEALTH_INTERVAL * 5
+    MURDER_WAIT = 30
+    PLATFORM_RSS_MULTIPLIER = 1
+    PROC_FDS = '/proc/self/fd'
 
-    def __init__(self, server_class, socket_factory, wsgi, address, logpath,
-                 pidfile='prefork.pid', num_workers=None):
+    def __init__(self, server_class, socket_factory, sleep, wsgi, address,
+                 logpath, pidfile, num_workers=None):
         self.server_class = server_class
         self.socket_factory = socket_factory
+        self.sleep = sleep
         self.wsgi = wsgi
         self.address = address
         self.logpath = logpath
@@ -30,18 +65,31 @@ class Master(object):
 
         self.listener = None
         if num_workers is None:
-            num_workers = multiprocessing.cpu_count()
+            num_workers = self.DEFAULT_NUM_WORKERS
         self.num_workers = num_workers
-        self.children = set()
+        self.pid_to_workers = {}
+        self.pipe_to_workers = {}
+
+    def add_worker(self, w):
+        self.pid_to_workers[w.pid] = w
+        self.pipe_to_workers[w.health_check_read] = w
+
+    def remove_worker(self, w):
+        self.pid_to_workers.pop(w.pid, None)
+        self.pipe_to_workers.pop(w.health_check_read, None)
 
     def log(self):
-        self.logfile = open(self.logpath, 'w')
+        self.logfile = WriteAndFlushFile(self.logpath, 'ab')
 
     def bind(self):
         self.listener = self.socket_factory()
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.listener.bind(self.address)
         self.listener.listen(self.BACKLOG)
+
+    def selfpipes(self):
+        # r, w
+        self.pipe_select, self.pipe_signal = set_nonblocking(*os.pipe())
 
     def daemonize(self):
         # for steps see TLPI 37.2
@@ -58,24 +106,66 @@ class Master(object):
         # 5 -- skip for now
         # os.chdir('/')
         # 6/7
-        os.dup2(self.logfile.fileno(), 0)
-        os.dup2(self.logfile.fileno(), 1)
-        os.dup2(self.logfile.fileno(), 2)
+        for fd in xrange(3):
+            os.dup2(self.logfile.fileno(), fd)
 
         with open(self.pidfile, 'w') as f:
             f.write(str(os.getpid()))
 
+    def health_check(self, fd_limit, maxrss_limit):
+        # parent alive?
+        # if os.getppid() == 1:
+        #     # we were orphaned and adopted by init
+        #     sys.stderr.write('parent died!\n')
+        #     sys.exit(1)
+        # memory usage?
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+
+        memory_usage = usage.ru_maxrss * self.PLATFORM_RSS_MULTIPLIER
+        if memory_usage > maxrss_limit:
+            sys.stderr.write('memory usage exceeded: %s\n' % memory_usage)
+            sys.exit(1)
+
+        fd_count = len(os.listdir(self.PROC_FDS))
+        if fd_count > fd_limit - 10 or fd_count > fd_limit * 0.9:
+            sys.stderr.write('file limit too close to limit %s\n' % fd_count)
+            sys.exit(1)
+
     def spawn_worker(self):
+        health_check_read, health_check_write = set_nonblocking(*os.pipe())
         pid = os.fork()
         if pid:
-            return pid
+            return WorkerMetadata(pid=pid,
+                                  health_check_read=health_check_read,
+                                  last_seen=time.time())
+
         self.set_signal_handlers(DEFAULT_SIGNAL_HANDLERS)
-        self.server.serve_forever()
+        self.server.start()
+
+        nofile_soft_limit = max(resource.getrlimit(resource.RLIMIT_NOFILE)[0],
+                                   1024)
+        maxrss_soft_limit = max(resource.getrlimit(resource.RLIMIT_RSS)[0],
+                                   2 ** 30)
+
+        while True:
+            self.health_check(nofile_soft_limit, maxrss_soft_limit)
+            os.write(health_check_write, '\x00')
+            self.sleep(self.CHILD_HEALTH_INTERVAL)
+
         sys.exit(0)
 
     def spawn_workers(self, number):
         for _ in xrange(number):
-            self.children.add(self.spawn_worker())
+            self.add_worker(self.spawn_worker())
+
+    def kill_workers(self, pids):
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError as e:
+                if e.errno == errno.ESRCH:
+                    continue
+            self.remove_worker(self.pid_to_workers[pid])
 
     def set_signal_handlers(self, signal_handlers):
         return {signo: signal.signal(signo, handler)
@@ -84,37 +174,72 @@ class Master(object):
     def master_signals(self):
 
         def handler(signo, frame):
+            os.write(self.pipe_signal, chr(signo))
+
+        handlers = self.set_signal_handlers({signo: handler
+                                             for signo, name
+                                             in SIGNO_TO_NAME.iteritems()})
+
+        return handlers
+
+    def handle_signals(self, signos):
+        for signo in signos:
+            signo = ord(signo)
+            print SIGNO_TO_NAME[signo]
             handler_name = SIGNO_TO_NAME[signo] + '_handler'
             handler_meth = getattr(self, handler_name, None)
             if handler_meth:
-                handler_meth(signo, frame)
-
-        return self.set_signal_handlers({signo: handler
-                                         for signo, name
-                                         in SIGNO_TO_NAME.iteritems()})
+                # no frame, sorry
+                handler_meth(signo, None)
 
     def run(self, daemonize=True):
         self.bind()
+
         if daemonize:
             self.log()
             self.daemonize()
 
+        self.selfpipes()
         self.master_signals()
+
         self.server = self.server_class(self.listener, self.wsgi)
         self.spawn_workers(self.num_workers)
 
         while True:
-            pysigset.sigsuspend(pysigset.SIGSET())
-            if self.num_workers > len(self.children):
-                self.spawn_workers(self.num_workers - len(self.children))
+            read = [c.health_check_read for c in self.pid_to_workers.values()]
+            read.append(self.pipe_select)
+            try:
+                read, write, exc = select.select(read, [], [], self.SELECT_TIMEOUT)
+            except select.error as e:
+                select_errno, _ = e.args
+                if select_errno == errno.EINTR:
+                    continue
+
+            now = time.time()
+
+            for r in read:
+                if r == self.pipe_select:
+                    self.handle_signals(os.read(r, 4096))
+                    continue
+                os.read(r, 4096)
+                worker = self.pipe_to_workers.get(r)
+                if not worker:
+                    continue
+                worker.last_seen = now
+
+            self.kill_workers(w.pid for w in self.pid_to_workers.values()
+                              if now - w.last_seen >= self.MURDER_WAIT)
+
+            if self.num_workers > len(self.pid_to_workers):
+                self.spawn_workers(self.num_workers - len(self.pid_to_workers))
 
     def SIGCLD_handler(self, signo, frame):
         while True:
             try:
                 pid, status = os.waitpid(-1, os.WNOHANG)
-                if pid == 0:
+                if not pid:
                     break
-                self.children.remove(pid)
+                self.remove_worker(self.pid_to_workers[pid])
             except OSError as e:
                 if e.errno == errno.ECHILD:
                     break
@@ -122,7 +247,7 @@ class Master(object):
     SIGCHLD_handler = SIGCLD_handler
 
     def SIGTERM_handler(self, signo, frame):
-        for child in self.children:
+        for child in self.workers:
             try:
                 os.kill(child, signal.SIGTERM)
             except OSError as e:
@@ -139,9 +264,11 @@ class Master(object):
     SIGINT_handler = SIGTERM_handler
 
 
+
 if __name__ == '__main__':
     import argparse
     import gevent.pywsgi
+    import traceback
 
     a = argparse.ArgumentParser()
     a.add_argument('address')
@@ -150,15 +277,29 @@ if __name__ == '__main__':
     a.add_argument('--pidfile', default='pidfile')
     a.add_argument('--daemonize', '-d', default=False, action='store_true')
 
+    import string
+    chrs = string.lowercase[:Master.DEFAULT_NUM_WORKERS]
+
     def wsgi(environ, start_response):
         start_response('200 OK', [('Content-Type', 'text/html')])
-        pid = str(os.getpid())
-        return ['<html><body><h1>ok</h1><br/>from ' + pid]
+        pid = os.getpid()
+        spid = str(pid)
+        def gnarly(depth):
+            if depth == 20:
+                raise RuntimeError
+            gnarly(depth + 1)
+
+        try:
+            gnarly(0)
+        except:
+            sys.stderr.write(traceback.format_exc())
+        return ['<html><body><h1>ok</h1><br/>from ' + spid]
 
     args = a.parse_args()
 
     Master(server_class=gevent.pywsgi.WSGIServer,
            socket_factory=gevent.socket.socket,
+           sleep=gevent.sleep,
            wsgi=wsgi,
            address=(args.address, args.port),
            logpath=args.logpath,
