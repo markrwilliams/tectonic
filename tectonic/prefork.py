@@ -143,9 +143,9 @@ class Master(object):
         self.server.start()
 
         nofile_soft_limit = max(resource.getrlimit(resource.RLIMIT_NOFILE)[0],
-                                   1024)
+                                1024)
         maxrss_soft_limit = max(resource.getrlimit(resource.RLIMIT_RSS)[0],
-                                   2 ** 30)
+                                2 ** 30)
 
         while True:
             self.health_check(nofile_soft_limit, maxrss_soft_limit)
@@ -209,7 +209,8 @@ class Master(object):
             read = [c.health_check_read for c in self.pid_to_workers.values()]
             read.append(self.pipe_select)
             try:
-                read, write, exc = select.select(read, [], [], self.SELECT_TIMEOUT)
+                read, write, exc = select.select(read, [], [],
+                                                 self.SELECT_TIMEOUT)
             except select.error as e:
                 select_errno, _ = e.args
                 if select_errno == errno.EINTR:
@@ -264,7 +265,6 @@ class Master(object):
     SIGINT_handler = SIGTERM_handler
 
 
-
 if __name__ == '__main__':
     import argparse
     import gevent.pywsgi
@@ -284,6 +284,7 @@ if __name__ == '__main__':
         start_response('200 OK', [('Content-Type', 'text/html')])
         pid = os.getpid()
         spid = str(pid)
+
         def gnarly(depth):
             if depth == 20:
                 raise RuntimeError
