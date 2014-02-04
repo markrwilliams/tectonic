@@ -10,13 +10,12 @@ import resource
 import time
 import gevent
 
-# ugh
 IGNORE_SIGS = ('SIGKILL', 'SIGSTOP', 'SIG_DFL', 'SIG_IGN')
-SIGNO_TO_NAME = {no: name for name, no in signal.__dict__.iteritems()
-                 if name.startswith('SIG')
-                 and name not in IGNORE_SIGS}
-DEFAULT_SIGNAL_HANDLERS = {signo: signal.getsignal(signo)
-                           for signo in SIGNO_TO_NAME}
+SIGNO_TO_NAME = dict((no, name) for name, no in signal.__dict__.iteritems()
+                     if name.startswith('SIG')
+                     and name not in IGNORE_SIGS)
+DEFAULT_SIGNAL_HANDLERS = dict((signo, signal.getsignal(signo))
+                               for signo in SIGNO_TO_NAME)
 
 
 def set_nonblocking(*fds):
@@ -191,19 +190,17 @@ class Master(object):
             self.remove_worker(self.pid_to_workers.get(pid))
 
     def set_signal_handlers(self, signal_handlers):
-        return {signo: signal.signal(signo, handler)
-                for signo, handler in signal_handlers.iteritems()}
+        return dict((signo, signal.signal(signo, handler))
+                    for signo, handler in signal_handlers.iteritems())
 
     def master_signals(self):
 
         def handler(signo, frame):
             safe_syscall(os.write, self.pipe_signal, chr(signo))
 
-        handlers = self.set_signal_handlers({signo: handler
-                                             for signo, name
-                                             in SIGNO_TO_NAME.iteritems()})
-
-        return handlers
+        handlers = dict((signo, handler)
+                        for signo, name in SIGNO_TO_NAME.iteritems())
+        return self.set_signal_handlers(handlers)
 
     def handle_signals(self, signos):
         for signo in signos:
