@@ -185,7 +185,6 @@ class Master(object):
     def handle_signals(self, signos):
         for signo in signos:
             signo = ord(signo)
-            print SIGNO_TO_NAME[signo]
             handler_name = SIGNO_TO_NAME[signo] + '_handler'
             handler_meth = getattr(self, handler_name, None)
             if handler_meth:
@@ -240,7 +239,8 @@ class Master(object):
                 pid, status = os.waitpid(-1, os.WNOHANG)
                 if not pid:
                     break
-                self.remove_worker(self.pid_to_workers[pid])
+                # we may have gotten interrupted by another sigchld call!
+                self.remove_worker(self.pid_to_workers.get(pid))
             except OSError as e:
                 if e.errno == errno.ECHILD:
                     break
@@ -248,7 +248,7 @@ class Master(object):
     SIGCHLD_handler = SIGCLD_handler
 
     def SIGTERM_handler(self, signo, frame):
-        for child in self.workers:
+        for child in self.pid_to_workers:
             try:
                 os.kill(child, signal.SIGTERM)
             except OSError as e:
