@@ -25,6 +25,27 @@ def set_nonblocking(*fds):
     return fds
 
 
+def _ignore_interrupts(e):
+    en, _ = e.args
+    if en not in (errno.EINTR, errno.EAGAIN):
+        raise e
+
+
+def safe_syscall(func, *args, **kwargs):
+    try:
+        return func(*args, **kwargs)
+    except Exception as e:
+        _ignore_interrupts(e)
+
+
+def restart_syscall(func, *args, **kwargs):
+    while True:
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            _ignore_interrupts(e)
+
+
 class WriteAndFlushFile(file):
 
     def write(self, str):
@@ -75,8 +96,9 @@ class Master(object):
         self.pipe_to_workers[w.health_check_read] = w
 
     def remove_worker(self, w):
-        self.pid_to_workers.pop(w.pid, None)
-        self.pipe_to_workers.pop(w.health_check_read, None)
+        if w:
+            self.pid_to_workers.pop(w.pid, None)
+            self.pipe_to_workers.pop(w.health_check_read, None)
 
     def log(self):
         self.logfile = WriteAndFlushFile(self.logpath, 'ab')
@@ -165,7 +187,7 @@ class Master(object):
             except OSError as e:
                 if e.errno == errno.ESRCH:
                     continue
-            self.remove_worker(self.pid_to_workers[pid])
+            self.remove_worker(self.pid_to_workers.get(pid))
 
     def set_signal_handlers(self, signal_handlers):
         return {signo: signal.signal(signo, handler)
@@ -174,7 +196,7 @@ class Master(object):
     def master_signals(self):
 
         def handler(signo, frame):
-            os.write(self.pipe_signal, chr(signo))
+            safe_syscall(os.write, self.pipe_signal, chr(signo))
 
         handlers = self.set_signal_handlers({signo: handler
                                              for signo, name
@@ -207,14 +229,8 @@ class Master(object):
         while True:
             read = [c.health_check_read for c in self.pid_to_workers.values()]
             read.append(self.pipe_select)
-            try:
-                read, write, exc = select.select(read, [], [],
-                                                 self.SELECT_TIMEOUT)
-            except select.error as e:
-                select_errno, _ = e.args
-                if select_errno == errno.EINTR:
-                    continue
-
+            read, write, exc = restart_syscall(select.select, read, [], [],
+                                               self.SELECT_TIMEOUT)
             now = time.time()
 
             for r in read:
@@ -268,7 +284,6 @@ class Master(object):
 if __name__ == '__main__':
     import argparse
     import gevent.pywsgi
-    import traceback
 
     a = argparse.ArgumentParser()
     a.add_argument('address')
@@ -284,16 +299,26 @@ if __name__ == '__main__':
         start_response('200 OK', [('Content-Type', 'text/html')])
         pid = os.getpid()
         spid = str(pid)
+        sys.stderr.write('''\
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. Phasellus
+eleifend a metus quis sollicitudin. Aenean nec dolor iaculis, rhoncus
+turpis sit amet, interdum quam. Nunc rhoncus magna a leo interdum
+luctus. Vestibulum nec sapien diam. Aliquam rutrum venenatis
+mattis. Etiam eget adipiscing risus. Vestibulum ante ipsum primis in
+faucibus orci luctus et ultrices posuere cubilia Curae; Fusce nibh
+nulla, lacinia quis dignissim vel, condimentum at odio. Nunc et diam
+mauris. Fusce sit amet odio sagittis, convallis urna a, blandit
+urna. Phasellus mattis ligula sed tincidunt pellentesque. Nullam
+tempor convallis dapibus.
 
-        def gnarly(depth):
-            if depth == 20:
-                raise RuntimeError
-            gnarly(depth + 1)
-
-        try:
-            gnarly(0)
-        except:
-            sys.stderr.write(traceback.format_exc())
+Duis vitae vulputate sem, nec eleifend orci. Donec vel metus
+fringilla, ultricies nunc at, ultrices quam. Donec placerat nisi quis
+fringilla facilisis. Fusce eget erat ut magna consectetur
+elementum. Aenean non vulputate nulla. Aliquam eu dui nibh. Vivamus
+mollis suscipit neque, quis aliquam ipsum auctor non. Nulla cursus
+turpis turpis, nec euismod urna placerat at. Nunc id sapien
+nibh. Vestibulum condimentum luctus placerat. Donec vitae posuere
+arcu.''' + '\n')
         return ['<html><body><h1>ok</h1><br/>from ' + spid]
 
     args = a.parse_args()
