@@ -128,8 +128,10 @@ class Master(object):
         # 5 -- skip for now
         # os.chdir('/')
         # 6/7
-        for fd in xrange(3):
-            os.dup2(self.logfile.fileno(), fd)
+        fd = os.open('/dev/null', os.O_RDWR)
+        os.dup2(fd, 0)
+        os.dup2(self.logfile.fileno(), 1)
+        os.dup2(self.logfile.fileno(), 2)
 
         with open(self.pidfile, 'w') as f:
             f.write(str(os.getpid()))
