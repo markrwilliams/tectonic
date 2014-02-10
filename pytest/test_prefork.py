@@ -1,3 +1,7 @@
+import os
+import shutil
+import os.path
+import tempfile
 from tectonic import prefork
 
 
@@ -16,3 +20,37 @@ def test_WorkerMetadata():
     assert metadata.pid == pid
     assert metadata.health_check_read == health_check_read
     assert metadata.last_seen == last_seen
+
+
+def test_WriteAndFlushFile():
+    """
+    Make sure we can write to and read from a file.
+
+    """
+
+    try:
+        # Create a directory. Make sure to remove it at the end.
+        dirname = tempfile.mkdtemp()
+        filename = 'filename.txt'
+        text1 = 'The quick brown fox\n'
+        text2 = 'The lazy dog'
+        full_path = os.path.join(dirname, filename)
+
+        # Open a file and write using both changed methods
+        f = prefork.WriteAndFlushFile(full_path, 'w')
+        f.write(text1)
+        f.writelines(text2)
+        f.close()
+        
+        # Read everything back
+        f = open(full_path, 'r')
+        data = f.readlines()
+        f.close()
+        
+        assert data[0] == text1
+        assert data[1] == text2
+
+    finally:
+        # Always remove it
+        shutil.rmtree(dirname)
+        
