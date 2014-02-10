@@ -1,4 +1,5 @@
 import os
+import fcntl
 import shutil
 import os.path
 import tempfile
@@ -53,4 +54,22 @@ def test_WriteAndFlushFile():
     finally:
         # Always remove it
         shutil.rmtree(dirname)
+
+
+def test_set_nonblocking():
+    """
+    See if we can set a file to non-blocking status
+
+    Create a random file for this.
+    """
+
+    f = tempfile.TemporaryFile()
+    flags = fcntl.fcntl(f, fcntl.F_GETFL, os.O_NONBLOCK)
+    assert ((flags | os.O_NONBLOCK) == flags) is False
+    altered_f = prefork.set_nonblocking(f)
+    flags = fcntl.fcntl(f, fcntl.F_GETFL, os.O_NONBLOCK)
+    assert (flags | os.O_NONBLOCK) == flags
+
+    # Destroy the file, even though GC will do that anyway.
+    f.close()
         
