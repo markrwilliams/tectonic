@@ -44,12 +44,12 @@ def test_WriteAndFlushFile():
         f.write(text1)
         f.writelines(text2)
         f.close()
-        
+
         # Read everything back
         f = open(full_path, 'r')
         data = f.readlines()
         f.close()
-        
+
         assert data[0] == text1
         assert data[1] == text2
 
@@ -95,4 +95,4 @@ def test_ignore_interupts():
 
     # Similarly
     a = AssertionError(errno.EAGAIN, 'This is a happy error.')
-    prefork._ignore_interrupts(a) 
+    prefork._ignore_interrupts(a)
