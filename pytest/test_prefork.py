@@ -1,6 +1,8 @@
 import os
 import fcntl
+import errno
 import shutil
+import pytest
 import os.path
 import tempfile
 from tectonic import prefork
@@ -65,11 +67,32 @@ def test_set_nonblocking():
 
     f = tempfile.TemporaryFile()
     flags = fcntl.fcntl(f, fcntl.F_GETFL, os.O_NONBLOCK)
-    assert ((flags | os.O_NONBLOCK) == flags) is False
+    assert (flags | os.O_NONBLOCK) != flags
     altered_f = prefork.set_nonblocking(f)
     flags = fcntl.fcntl(f, fcntl.F_GETFL, os.O_NONBLOCK)
     assert (flags | os.O_NONBLOCK) == flags
 
     # Destroy the file, even though GC will do that anyway.
     f.close()
-        
+
+
+def test_ignore_interupts():
+    """
+    Make sure that we ignore interruption errors
+
+    """
+
+    with pytest.raises(AssertionError):
+        a = AssertionError()
+        prefork._ignore_interrupts(a)
+    with pytest.raises(AssertionError):
+        a = AssertionError('Hello, how are you?', 'I am fine')
+        prefork._ignore_interrupts(a)
+
+    # Now, this one shouldn't raise
+    a = AssertionError(errno.EINTR, 'This is a happy error.')
+    prefork._ignore_interrupts(a)
+
+    # Similarly
+    a = AssertionError(errno.EAGAIN, 'This is a happy error.')
+    prefork._ignore_interrupts(a) 

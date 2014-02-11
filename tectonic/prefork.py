@@ -25,7 +25,12 @@ def set_nonblocking(*fds):
 
 
 def _ignore_interrupts(e):
-    en, _ = e.args
+    try:
+        en, _ = e.args
+    except ValueError:
+        # This can happen in certain cases where the error only
+        # has one piece
+        raise e
     if en not in (errno.EINTR, errno.EAGAIN):
         raise e
 
