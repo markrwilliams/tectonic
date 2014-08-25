@@ -28,7 +28,8 @@ if __name__ == '__main__':
     a = argparse.ArgumentParser()
     a.add_argument('address')
     a.add_argument('port', type=int)
-    a.add_argument('--logpath', default='log')
+    a.add_argument('--access_log_path', default='access_log')
+    a.add_argument('--error_log_path', default='error_log')
     a.add_argument('--pidfile', default='pidfile')
     a.add_argument('--daemonize', '-d', default=False, action='store_true')
 
@@ -55,15 +56,21 @@ elementum. Aenean non vulputate nulla. Aliquam eu dui nibh. Vivamus
 mollis suscipit neque, quis aliquam ipsum auctor non. Nulla cursus
 turpis turpis, nec euismod urna placerat at. Nunc id sapien
 nibh. Vestibulum condimentum luctus placerat. Donec vitae posuere
-arcu.''' + '\n')
+arcu.\n''' * 5 + '**END**\n')
         return ['<html><body><h1>ok</h1><br/>from ' + spid]
 
     args = a.parse_args()
 
+    def server_args_factory():
+        import sys
+        return (), {'log': sys.stdout}
+
     Master(server_class=gevent.pywsgi.WSGIServer,
+           server_args_factory=server_args_factory,
            socket_factory=gevent.socket.socket,
            sleep=gevent.sleep,
            wsgi=wsgi,
            address=(args.address, args.port),
-           logpath=args.logpath,
+           access_log_path=args.access_log_path,
+           error_log_path=args.error_log_path,
            pidfile=args.pidfile).run(args.daemonize)

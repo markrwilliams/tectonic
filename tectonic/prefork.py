@@ -8,7 +8,7 @@ import select
 import sys
 import resource
 import time
-import gevent
+
 
 IGNORE_SIGS = ('SIGKILL', 'SIGSTOP', 'SIG_DFL', 'SIG_IGN')
 SIGNO_TO_NAME = dict((no, name) for name, no in signal.__dict__.iteritems()
@@ -50,17 +50,6 @@ def restart_syscall(func, *args, **kwargs):
             _ignore_interrupts(e)
 
 
-class WriteAndFlushFile(file):
-
-    def write(self, str):
-        full = len(str) == os.write(self.fileno(), str)
-        self.flush()
-        return full
-
-    def writelines(self, sequence_of_strings):
-        return self.write(''.join(sequence_of_strings))
-
-
 class WorkerMetadata(object):
 
     def __init__(self, pid, health_check_read, last_seen):
@@ -78,14 +67,17 @@ class Master(object):
     PLATFORM_RSS_MULTIPLIER = 1
     PROC_FDS = '/proc/self/fd'
 
-    def __init__(self, server_class, socket_factory, sleep, wsgi, address,
-                 logpath, pidfile, num_workers=None):
+    def __init__(self, server_class, server_args_factory,
+                 socket_factory, sleep, wsgi, address,
+                 access_log_path, error_log_path, pidfile, num_workers=None):
         self.server_class = server_class
+        self.server_args_factory = server_args_factory
         self.socket_factory = socket_factory
         self.sleep = sleep
         self.wsgi = wsgi
         self.address = address
-        self.logpath = logpath
+        self.access_log_path = access_log_path
+        self.error_log_path = error_log_path
         self.pidfile = pidfile
 
         self.listener = None
@@ -105,8 +97,11 @@ class Master(object):
             self.pid_to_workers.pop(w.pid, None)
             self.pipe_to_workers.pop(w.health_check_read, None)
 
-    def log(self):
-        self.logfile = WriteAndFlushFile(self.logpath, 'ab')
+    def open_log(self, path):
+        # for O_APPEND's atomicity to work across the children's
+        # stdout/err, the interpreter must be started with unbuffered
+        # stdio (-u or PYTHONUNBUFFERED)
+        return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND)
 
     def bind(self):
         self.listener = self.socket_factory()
@@ -135,8 +130,8 @@ class Master(object):
         # 6/7
         fd = os.open('/dev/null', os.O_RDWR)
         os.dup2(fd, 0)
-        os.dup2(self.logfile.fileno(), 1)
-        os.dup2(self.logfile.fileno(), 2)
+        os.dup2(self.open_log(self.access_log_path), 1)
+        os.dup2(self.open_log(self.error_log_path), 2)
 
         with open(self.pidfile, 'w') as f:
             f.write(str(os.getpid()))
@@ -222,13 +217,16 @@ class Master(object):
         self.bind()
 
         if daemonize:
-            self.log()
             self.daemonize()
 
         self.selfpipes()
         self.master_signals()
 
-        self.server = self.server_class(self.listener, self.wsgi)
+        args, kwargs = self.server_args_factory()
+
+        args = (self.listener, self.wsgi) + args
+
+        self.server = self.server_class(*args, **kwargs)
         self.spawn_workers(self.num_workers)
 
         while True:
