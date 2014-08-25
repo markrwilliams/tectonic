@@ -195,23 +195,20 @@ class Master(object):
         return dict((signo, signal.signal(signo, handler))
                     for signo, handler in signal_handlers.iteritems())
 
-    def master_signals(self):
+    def install_signal_handlers(self):
+        signal.signal(signal.SIGTERM, self.shutdown)
+        signal.signal(signal.SIGINT, self.shutdown)
 
-        def handler(signo, frame):
-            safe_syscall(os.write, self.pipe_signal, chr(signo))
-
-        handlers = dict((signo, handler)
-                        for signo, name in SIGNO_TO_NAME.iteritems())
-        return self.set_signal_handlers(handlers)
-
-    def handle_signals(self, signos):
-        for signo in signos:
-            signo = ord(signo)
-            handler_name = SIGNO_TO_NAME[signo] + '_handler'
-            handler_meth = getattr(self, handler_name, None)
-            if handler_meth:
-                # no frame, sorry
-                handler_meth(signo, None)
+        # for sig_chld:
+        # learned from twisted.internet._signals
+        def noop(*args):
+            pass
+        # don't run any handler..
+        signal.signal(signal.SIGCHLD, noop)
+        # ...and restart applicable system calls...
+        signal.siginterrupt(signal.SIGCHLD, False)
+        # ...and use set_wakeup_fd
+        signal.set_wakeup_fd(self.pipe_signal)
 
     def run(self, daemonize=True):
         self.bind()
@@ -220,7 +217,7 @@ class Master(object):
             self.daemonize()
 
         self.selfpipes()
-        self.master_signals()
+        self.install_signal_handlers()
 
         args, kwargs = self.server_args_factory()
 
@@ -232,13 +229,15 @@ class Master(object):
         while True:
             read = [c.health_check_read for c in self.pid_to_workers.values()]
             read.append(self.pipe_select)
-            read, write, exc = restart_syscall(select.select, read, [], [],
-                                               self.SELECT_TIMEOUT)
+            read, write, exc = restart_syscall(
+                select.select,
+                read, [], [], self.SELECT_TIMEOUT)
+
             now = time.time()
 
             for r in read:
                 if r == self.pipe_select:
-                    self.handle_signals(os.read(r, 4096))
+                    self.reap()
                     continue
                 os.read(r, 4096)
                 worker = self.pipe_to_workers.get(r)
@@ -252,7 +251,7 @@ class Master(object):
             if self.num_workers > len(self.pid_to_workers):
                 self.spawn_workers(self.num_workers - len(self.pid_to_workers))
 
-    def SIGCLD_handler(self, signo, frame):
+    def reap(self):
         while True:
             try:
                 pid, status = os.waitpid(-1, os.WNOHANG)
@@ -263,9 +262,7 @@ class Master(object):
                 if e.errno == errno.ECHILD:
                     break
 
-    SIGCHLD_handler = SIGCLD_handler
-
-    def SIGTERM_handler(self, signo, frame):
+    def shutdown(self, *args, **kwargs):
         for child in self.pid_to_workers:
             try:
                 os.kill(child, signal.SIGTERM)
@@ -279,5 +276,3 @@ class Master(object):
                 if e.errno == errno.ECHILD:
                     break
         sys.exit(0)
-
-    SIGINT_handler = SIGTERM_handler
