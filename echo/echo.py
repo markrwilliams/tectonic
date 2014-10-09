@@ -1,10 +1,9 @@
 import os
 import socket
 from contextlib import closing
-from tectonic.bureaucrat import request_socket
+from tectonic.bureaucrat import request_tcp_listener
 
-bound_sock = request_socket(socket.AF_INET, socket.SOCK_STREAM, 0,
-                            '0.0.0.0', 9998)
+bound_sock = request_tcp_listener(host='0.0.0.0', port=9998, listen=128)
 
 
 while True:

@@ -25,8 +25,8 @@ def make_message(name, fields, attrs=None):
     return msg_type
 
 
-WantSocket = make_message('WantSocket', 'family type proto host port')
-HaveSocket = make_message('HaveSocket', 'family type proto host port')
+WantTCPListener = make_message('WantTCPListener', 'host port listen')
+HaveTCPListener = make_message('HaveTCPListener', 'host port')
 WantChannel = make_message('WantChannel', 'identity partner',
                            attrs={'normalized':
                                   property(lambda self: tuple(sorted(self)))})

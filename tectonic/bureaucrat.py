@@ -10,17 +10,17 @@ from passage.way import Passageway
 BUREAUCRAT_PATH = 'bureaucrat.sock'
 
 
-def request_socket(family, type, proto, host, port, path=BUREAUCRAT_PATH):
+def request_tcp_listener(host, port, listen, path=BUREAUCRAT_PATH):
     with closing(connect(path)) as uds:
         passage_way = Passageway()
 
-        messages._sendall(uds,
-                          messages.WantSocket(family, type, proto, host, port))
+        request = messages.WantTCPListener(host, port, listen)
+        messages._sendall(uds, request)
 
         response, _ = messages._recvall(uds)
 
-        assert isinstance(response, messages.HaveSocket)
-        assert response == (family, type, proto, host, port)
+        assert isinstance(response, messages.HaveTCPListener)
+        assert response == (host, port)
 
         return passage_way.obtain(uds, socket.socket)
 
@@ -45,7 +45,7 @@ class Bureaucrat(object):
         self.sock = None
         self.path = path
         self.passage_way = Passageway()
-        self.sockets = {}
+        self.tcp_listeners = {}
         self.channels = {}
 
     def bind(self, path=None):
@@ -64,19 +64,17 @@ class Bureaucrat(object):
         except Exception:
             traceback.print_exc()
 
-    def _handle_WantSocket(self, client, request):
-        family, type, proto, host, port = request
-
-        sock = self.sockets.get(request)
+    def _handle_WantTCPListener(self, client, request):
+        host, port, listen = request
+        sock = self.tcp_listeners.get(request)
         if sock is None:
-            sock = socket.socket(family, type, proto)
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             sock.bind((host, port))
-            # TODO configurable
-            sock.listen(128)
-            self.sockets[(family, type, proto, host, port)] = sock
+            sock.listen(listen)
+            self.tcp_listeners[request] = sock
 
-        response = messages.HaveSocket(*request)
+        response = messages.HaveTCPListener(host, port)
         messages._sendall(client, response)
         self.passage_way.transfer(client, sock)
 
