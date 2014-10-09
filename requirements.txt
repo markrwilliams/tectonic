@@ -1,3 +1,1 @@
-gevent==1.0
-greenlet==0.4.2
 pysigset==0.2.1
