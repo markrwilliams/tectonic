@@ -34,11 +34,11 @@ def wait_for_bureacrat(parent_socket, child_pid, sigchld_pipe, log_dir,
     def get_process_group():
         try:
             env['process_group'] = int(parent_socket.recv(1024))
-            readset.remove(sigchld_pipe)
         except:
             traceback.print_exc()
             os.kill(child_pid, signal.SIGKILL)
             return False
+        readset.remove(sigchld_pipe)
         signal.set_wakeup_fd(-1)
         return True
 
