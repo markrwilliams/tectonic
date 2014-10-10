@@ -104,15 +104,6 @@ class Proctor(object):
     def create_worker(self, command):
         return WorkerProcess(command, stdin=self.dev_null)
 
-    def create_process(self, command, stdin=None, stdout=None, stderr=None):
-        if stdin is None:
-            stdin = self._dev_null
-        if stdout is None:
-            stdout = self._dev_null
-        if stderr is None:
-            stderr = self._dev_null
-        return Process(command, stdin=stdin, stdout=stdout, stderr=stderr)
-
     def reap(self, *args, **kwargs):
         return [self.living.pop(process.pid)
                 for process in self.living.values()
