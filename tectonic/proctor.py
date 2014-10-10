@@ -11,7 +11,6 @@ from .log_rotate import (StandardOutRotation,
                          proctor_log_directory,
                          bureaucrat_log_directory,
                          start_stdouterr_rotation_thread)
-
 from . import messages
 from . import client
 
@@ -58,7 +57,10 @@ class WorkerProcess(Process):
     passage_way = Passageway([messages.WorkerStandardPairMessage()])
 
     def on_restart(self):
-        std_pair = client.request_worker_stdpair(passage_way=self.passage_way)
+        with pysigset.suspended_signals(signal.SIGCHLD):
+            pw = self.passage_way
+            std_pair = client.request_worker_stdpair(passage_way=pw)
+
         stdout = self._kwargs.pop('stdout', None)
         stderr = self._kwargs.pop('stderr', None)
 
@@ -110,6 +112,8 @@ class Proctor(object):
                 if process.poll() is not None]
 
     def shutdown(self, *args, **kwargs):
+        with pysigset.suspended_signals(signal.SIGCHLD):
+            signal.signal(signal.SIGCHLD, signal.SIG_DFL)
         self.running = False
         self.reap()
         for child in self.living.values():
@@ -118,21 +122,21 @@ class Proctor(object):
         for child in self.living.values():
             child.kill()
         self.reap()
-        os.unlink(client.BUREAUCRAT_PATH)
+        if os.path.exists(client.BUREAUCRAT_PATH):
+            os.unlink(client.BUREAUCRAT_PATH)
 
     def respawn(self, missing=None):
-        with pysigset.suspended_signals(signal.SIGCHLD):
-            if missing is None:
-                running = set(self.living.values())
-                missing = set(self.processes) - running
+        if missing is None:
+            running = set(self.living.values())
+            missing = set(self.processes) - running
 
-            for process in missing:
-                try:
-                    popen = process.restart()
-                except OSError as e:
-                    # TODO handle on a per-process (group?) basis
-                    raise e
-                self.living[popen.pid] = process
+        for process in missing:
+            try:
+                popen = process.restart()
+            except OSError as e:
+                # TODO handle on a per-process (group?) basis
+                raise e
+            self.living[popen.pid] = process
 
     def process_cycle(self, *args, **kwargs):
         dead = self.reap()
@@ -165,6 +169,8 @@ class Proctor(object):
 
         while self.running:
             pysigset.sigsuspend(pysigset.SIGSET())
+
+        self.shutdown()
 
 
 argument_parser = argparse.ArgumentParser(
