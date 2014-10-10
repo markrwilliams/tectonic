@@ -1,8 +1,10 @@
 import os
+import errno
 import json
 import socket
 import re
 from collections import namedtuple
+from passage.way import JSONMessage, DescribedObject
 
 
 class Message(object):
@@ -31,6 +33,8 @@ WantChannel = make_message('WantChannel', 'identity partner',
                            attrs={'normalized':
                                   property(lambda self: tuple(sorted(self)))})
 HaveChannel = make_message('HaveChannel', 'identity partner')
+WantWorkerStandardPair = make_message('WantWorkerStandardPair', 'ignored')
+HaveWorkerStandardPair = make_message('HaveWorkerStandardPair', 'ignored')
 Failure = make_message('Failure', 'request_message')
 
 
@@ -83,3 +87,18 @@ def _recvall(sock):
     assert data[-1] == ','
 
     return deserialize(data[:-1])
+
+
+WorkerStandardPair = namedtuple('WorkerStandardPair', 'stdout stderr')
+
+
+class WorkerStandardPairMessage(JSONMessage):
+    type = WorkerStandardPair
+
+    def describe(self, standard_pair):
+        return DescribedObject(description=list(standard_pair._fields),
+                               filenos=[standard_pair.stdout,
+                                        standard_pair.stderr])
+
+    def rescribe(self, description, filenos):
+        return WorkerStandardPair(**dict(zip(description, filenos)))

@@ -1,7 +1,9 @@
 import os
-import socket
 from contextlib import closing
-from tectonic.bureaucrat import request_tcp_listener
+from tectonic.client import (request_tcp_listener,
+                             start_stdout_stderr_rotation_thread)
+
+start_stdout_stderr_rotation_thread(1)
 
 bound_sock = request_tcp_listener(host='0.0.0.0', port=9998, listen=128)
 

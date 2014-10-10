@@ -5,7 +5,7 @@ from tectonic import log_rotate
 
 def test_open_log_fd(tmpdir):
     '''\
-    The log file should only be created and opened if it's not already present.
+    The log file should be created if necessary and always appended to.
     '''
     log = tmpdir.join('log')
     assert not log.check()
@@ -14,9 +14,7 @@ def test_open_log_fd(tmpdir):
     os.close(fd)
     assert log.check(file=True)
     assert log.read() == 'file'
-
-    with pytest.raises(OSError):
-        log_rotate.open_log_fd(str(log))
+    assert log.stat().mode == log_rotate.MODE
 
 
 def test_rotate_path(tmpdir):
@@ -49,25 +47,19 @@ def test_LogRotation_creation(tmpdir):
     representing a path.  Both should reference an existing file.
     '''
     path = tmpdir.join('path').ensure()
+    path.chmod(0)
+    expected_mode = log_rotate.LogRotation(path=str(path)).mode
+    assert path.stat().mode == expected_mode
+
     fileobj = tmpdir.join('file').ensure()
-
-    log_rotate.LogRotation(log=str(path))
-    log_rotate.LogRotation(log=fileobj.open())
-
-    with pytest.raises(ValueError):
-        log_rotate.LogRotation(None)
-
-    with pytest.raises(IOError):
-        log_rotate.LogRotation(str(tmpdir.join('missing')))
-
-    with pytest.raises(IOError):
-        with fileobj.open() as f:
-            fileobj.remove()
-            log_rotate.LogRotation(f)
+    fileobj.chmod(0400)
+    expected_mode = log_rotate.LogRotation(path=str(fileobj),
+                                           fd=fileobj.open().fileno()).mode
+    assert path.stat().mode == expected_mode
 
 
 def _monitor_does_not_rotate(rotator, local_path):
-    assert rotator.monitor() is None
+    assert rotator.rotate() is None
     assert local_path.check()
     assert len(local_path.dirpath().listdir()) == 1
 
@@ -75,12 +67,12 @@ def _monitor_does_not_rotate(rotator, local_path):
 def _monitor_does_rotate(rotator, local_path):
     previous_content = local_path.open().read()
 
-    to_close = rotator.monitor()
+    to_close = rotator.rotate()
 
     intermediate_content = 'intermediate_content'
     os.write(to_close, intermediate_content)
 
-    to_return = rotator.monitor()
+    to_return = rotator.rotate()
 
     assert to_return and to_close
     assert len(local_path.dirpath().listdir()) == 3
@@ -105,7 +97,6 @@ def test_LogRotation_monitor_path(tmpdir):
     log.ensure()
 
     rotator = log_rotate.LogRotation(str(log), max_size=0, iterations=3)
-    assert log.stat().mode == rotator.mode
 
     _monitor_does_not_rotate(rotator, log)
 
@@ -127,9 +118,9 @@ def test_LogRotation_monitor_file(tmpdir):
     log = tmpdir.join('log')
     original_fileobj = log.open('w')
 
-    rotator = log_rotate.LogRotation(original_fileobj,
+    rotator = log_rotate.LogRotation(str(log),
+                                     fd=original_fileobj.fileno(),
                                      max_size=0, iterations=3)
-    assert log.stat().mode == rotator.mode
 
     _monitor_does_not_rotate(rotator, log)
 
