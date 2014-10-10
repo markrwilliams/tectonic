@@ -146,13 +146,13 @@ def kill(pgroupfile):
         print >> sys.stderr, msg
         return 1
 
-    for _ in xrange(5):
+    for _ in xrange(50):
         try:
-            os.killpg(-pgrp, 0)
+            os.killpg(pgrp, 0)
         except OSError as e:
             if e.errno == errno.ESRCH:
                 return 0
-        time.sleep(1)
+        time.sleep(.1)
 
     try:
         os.killpg(pgrp, signal.SIGKILL)

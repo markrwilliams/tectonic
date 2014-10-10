@@ -24,11 +24,16 @@ def notify(polled):
         os.close(notify_fd)
 
 
+def clear_sigprocmask():
+    pysigset.sigprocmask(pysigset.SIG_SETMASK, pysigset.SIGSET(), 0)
+
+
 class Process(object):
 
     def __init__(self, *args, **kwargs):
         self.popen = None
         self._args, self._kwargs = args, kwargs
+        self._kwargs['preexec_fn'] = clear_sigprocmask
         self.command = self._args[0]
 
     def on_restart(self):
