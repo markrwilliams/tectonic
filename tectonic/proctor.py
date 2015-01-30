@@ -170,7 +170,7 @@ class Proctor(object):
             if poll is not None:
                 raise RuntimeError("Bureaucrat failed to start!")
 
-            self.respawn()
+        self.respawn()
 
         while self.running:
             pysigset.sigsuspend(pysigset.SIGSET())
