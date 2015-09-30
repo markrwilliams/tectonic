@@ -1,6 +1,6 @@
 import os
 import time
-from tectonic.bureaucrat import request_channel
+from tectonic.client import request_channel
 
 channel = request_channel(identity='thing2', partner='thing1')
 
